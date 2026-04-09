@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WSY → 闲鱼流水线</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 24px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    label { display: block; font-size: 12px; color: #444; margin-bottom: 6px; }
+    input { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
+    .card { border: 1px solid #e6e6e6; border-radius: 12px; padding: 16px; max-width: 980px; }
+    .col { flex: 1 1 240px; }
+    button { padding: 10px 14px; border: 1px solid #222; background: #222; color: #fff; border-radius: 10px; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    pre { background: #0b1020; color: #d6e1ff; padding: 12px; border-radius: 12px; overflow: auto; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="row">
+      <div class="col" style="flex: 2 1 520px;">
+        <label>商品 URL</label>
+        <input id="product_url" placeholder="https://www.wsy.com/item.htm?id=..." />
+      </div>
+    </div>
+
+    <div class="row" style="margin-top: 12px; align-items: center;">
+      <div class="col" style="display:flex; gap:10px; align-items:flex-end;">
+        <button id="run_btn">开始执行</button>
+      </div>
+    </div>
+
+    <div style="margin-top: 12px;">
+      <label>日志</label>
+      <pre id="logs"></pre>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    let currentJobId = null;
+    let pollTimer = null;
+
+    async function run() {
+      $("run_btn").disabled = true;
+      $("logs").textContent = "";
+
+      const payload = { product_url: $("product_url").value.trim() };
+      const res = await fetch("/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        $("run_btn").disabled = false;
+        $("logs").textContent = txt;
+        return;
+      }
+      const data = await res.json();
+      currentJobId = data.job_id;
+      pollTimer = setInterval(poll, 1000);
+      await poll();
+    }
+
+    async function poll() {
+      if (!currentJobId) return;
+      const res = await fetch(`/status?id=${encodeURIComponent(currentJobId)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      $("logs").textContent = (data.logs || []).join("\n");
+      if (data.status === "done" || data.status === "error") {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        $("run_btn").disabled = false;
+        if (data.status === "error" && data.error) {
+          $("logs").textContent = ($("logs").textContent + "\n" + data.error).trim();
+        }
+      }
+    }
+
+    $("run_btn").addEventListener("click", () =>
+      run().catch((err) => {
+        $("run_btn").disabled = false;
+        $("logs").textContent = String(err);
+      })
+    );
+  </script>
+</body>
+</html>
+

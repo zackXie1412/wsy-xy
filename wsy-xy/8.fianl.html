@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>批量发布</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 24px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    label { display: block; font-size: 12px; color: #444; margin-bottom: 6px; }
+    input { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
+    .card { border: 1px solid #e6e6e6; border-radius: 12px; padding: 16px; max-width: 980px; }
+    .col { flex: 1 1 240px; }
+    button { padding: 10px 14px; border: 1px solid #222; background: #222; color: #fff; border-radius: 10px; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .toolbar { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
+    .toolbar input[type="text"]{ padding: 8px 10px; border-radius: 10px; border: 1px solid #ccc; width: 280px; }
+    .pill { display:inline-flex; align-items:center; gap:6px; padding: 6px 10px; border-radius: 999px; background: #f2f2f2; font-size: 12px; color:#333; }
+    .pill b { font-weight: 600; }
+    .logbox { margin-top: 10px; background: #0b1020; color: #d6e1ff; border-radius: 12px; border: 1px solid #101a35; }
+    .loghead { display:flex; justify-content: space-between; gap: 12px; align-items:center; padding: 10px 12px; border-bottom: 1px solid #101a35; }
+    .logmeta { display:flex; gap: 10px; align-items:center; flex-wrap: wrap; }
+    .logmeta label { margin:0; color:#c7d2ff; font-size: 12px; display:flex; gap: 6px; align-items:center; }
+    .logmeta input[type="checkbox"] { width: auto; }
+    .logactions { display:flex; gap: 8px; align-items:center; flex-wrap: wrap; }
+    .logactions button { background:#111a34; border-color:#26325a; padding: 8px 10px; border-radius: 10px; }
+    .logactions button:disabled { opacity: 0.5; }
+    pre { margin:0; padding: 12px; overflow:auto; max-height: 520px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; line-height: 1.5; white-space: pre; }
+    .wrap pre { white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="toolbar">
+      <span id="status_pill" class="pill"><b>状态</b><span id="status_text">idle</span></span>
+      <span id="updated_pill" class="pill"><b>更新</b><span id="updated_text">-</span></span>
+    </div>
+
+    <div class="row">
+      <div class="col" style="flex: 2 1 520px;">
+        <label>列表页 URL</label>
+        <input id="listing_url" placeholder="https://www.wsy.com/..." />
+      </div>
+    </div>
+
+    <div class="row" style="margin-top: 12px;">
+      <div class="col">
+        <label>最多处理数量（0 表示全部）</label>
+        <input id="max_items" value="0" />
+      </div>
+      <div class="col">
+        <label>发布价格</label>
+        <input id="price" value="60" />
+      </div>
+      <div class="col">
+        <label>每个商品间隔秒数</label>
+        <input id="sleep_s" value="1" />
+      </div>
+    </div>
+
+    <div class="row" style="margin-top: 12px; align-items: center;">
+      <div class="col" style="display:flex; gap:10px; align-items:flex-end;">
+        <button id="run_btn">开始批量执行</button>
+        <button id="stop_btn" disabled>停止</button>
+      </div>
+    </div>
+
+    <div class="logbox" id="logbox">
+      <div class="loghead">
+        <div class="logmeta">
+          <label><input id="autoscroll" type="checkbox" checked />自动滚动</label>
+          <label><input id="wrap" type="checkbox" />自动换行</label>
+          <input id="filter" type="text" placeholder="过滤关键字（如：失败 / [desc] / 价格）" />
+        </div>
+        <div class="logactions">
+          <button id="copy_btn">复制日志</button>
+          <button id="download_btn">下载日志</button>
+          <button id="clear_btn">清空视图</button>
+        </div>
+      </div>
+      <pre id="logs"></pre>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let currentJobId = null;
+    let pollTimer = null;
+    let lastLogs = [];
+    let lastStatus = "idle";
+
+    function nowText() {
+      const d = new Date();
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+
+    function setStatus(s) {
+      lastStatus = s || "idle";
+      $("status_text").textContent = lastStatus;
+    }
+
+    function renderLogs() {
+      const keyword = ($("filter").value || "").trim().toLowerCase();
+      const lines = Array.isArray(lastLogs) ? lastLogs : [];
+      const filtered = keyword
+        ? lines.filter((l) => String(l).toLowerCase().includes(keyword))
+        : lines;
+      $("logs").textContent = filtered.join("\n");
+
+      if ($("autoscroll").checked) {
+        const el = $("logs");
+        el.scrollTop = el.scrollHeight;
+      }
+    }
+
+    async function run() {
+      $("run_btn").disabled = true;
+      $("stop_btn").disabled = true;
+      $("logs").textContent = "";
+      $("updated_text").textContent = "-";
+      setStatus("starting");
+      lastLogs = [];
+
+      const payload = {
+        listing_url: $("listing_url").value.trim(),
+        max_items: parseInt($("max_items").value || "0", 10),
+        price: parseFloat($("price").value || "60"),
+        sleep_s: parseFloat($("sleep_s").value || "1")
+      };
+
+      const res = await fetch("/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        $("run_btn").disabled = false;
+        $("logs").textContent = txt;
+        setStatus("error");
+        return;
+      }
+      const data = await res.json();
+      currentJobId = data.job_id;
+      $("stop_btn").disabled = false;
+      setStatus("running");
+      pollTimer = setInterval(poll, 1000);
+      await poll();
+    }
+
+    async function stop() {
+      if (!currentJobId) return;
+      $("stop_btn").disabled = true;
+      setStatus("stopping");
+      await fetch("/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: currentJobId }),
+      });
+    }
+
+    async function poll() {
+      if (!currentJobId) return;
+      const res = await fetch(`/status?id=${encodeURIComponent(currentJobId)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      lastLogs = data.logs || [];
+      renderLogs();
+      setStatus(data.status || "running");
+      $("updated_text").textContent = nowText();
+      if (data.status === "done" || data.status === "error" || data.status === "cancelled") {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        $("run_btn").disabled = false;
+        $("stop_btn").disabled = true;
+        if (data.status === "error" && data.error) {
+          lastLogs = [...(data.logs || []), String(data.error)];
+          renderLogs();
+        }
+      }
+    }
+
+    $("run_btn").addEventListener("click", () =>
+      run().catch((err) => {
+        $("run_btn").disabled = false;
+        $("stop_btn").disabled = true;
+        $("logs").textContent = String(err);
+        setStatus("error");
+      })
+    );
+    $("stop_btn").addEventListener("click", () => stop().catch(() => {}));
+
+    $("wrap").addEventListener("change", () => {
+      if ($("wrap").checked) {
+        $("logbox").classList.add("wrap");
+      } else {
+        $("logbox").classList.remove("wrap");
+      }
+    });
+    $("filter").addEventListener("input", () => renderLogs());
+
+    $("clear_btn").addEventListener("click", () => {
+      $("logs").textContent = "";
+    });
+
+    $("copy_btn").addEventListener("click", async () => {
+      const text = $("logs").textContent || "";
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (e) {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+    });
+
+    $("download_btn").addEventListener("click", () => {
+      const text = $("logs").textContent || "";
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `logs_${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+  </script>
+</body>
+</html>
